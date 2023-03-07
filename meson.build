@@ -15,5 +15,6 @@ executable('oe-doom-launcher', [
     glib_dep,
     libbsd_dep,
     systemd_dep,
-  ]
+  ],
+  install: true
 )

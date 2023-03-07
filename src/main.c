@@ -32,7 +32,9 @@ static struct config {
     char* zdoom;
     char* mp_wad;
     char* mp_map;
+    char* mp_config;
     char* sp_wad;
+    char* sp_config;
     bool can_host;
 } config;
 
@@ -141,6 +143,10 @@ static void launch_single_player(void) {
         g_strv_builder_add(sb, config.zdoom);
         g_strv_builder_add(sb, "-iwad");
         g_strv_builder_add(sb, config.sp_wad);
+        if (config.sp_config) {
+            g_strv_builder_add(sb, "-config");
+            g_strv_builder_add(sb, config.sp_config);
+        }
 
         g_auto(GStrv) argv = g_strv_builder_end(sb);
         spawn_child(argv);
@@ -163,6 +169,10 @@ static void connect_to_host(void) {
     g_strv_builder_add(sb, "-port");
     snprintf(port_str, sizeof(port_str), "%d", current_host->port);
     g_strv_builder_add(sb, port_str);
+    if (config.mp_config) {
+        g_strv_builder_add(sb, "-config");
+        g_strv_builder_add(sb, config.mp_config);
+    }
 
     g_auto(GStrv) argv = g_strv_builder_end(sb);
     spawn_child(argv);
@@ -232,6 +242,10 @@ static gboolean on_source_timeout(gpointer userdata) {
         g_strv_builder_add(sb, "-port");
         snprintf(count_str, sizeof(count_str), "%i", config.port);
         g_strv_builder_add(sb, count_str);
+        if (config.mp_config) {
+            g_strv_builder_add(sb, "-config");
+            g_strv_builder_add(sb, config.mp_config);
+        }
 
         g_auto(GStrv) argv = g_strv_builder_end(sb);
         spawn_child(argv);
@@ -590,7 +604,9 @@ static bool parse_config(int* argc, char*** argv) {
     config.zdoom = g_strdup("gzdoom");
     config.mp_wad = g_strdup("freedm.wad");
     config.mp_map = g_strdup("MAP01");
-    config.sp_wad = g_strdup("chex3.wad");
+    config.mp_config = NULL;
+    config.sp_wad = g_strdup("freedoom1.wad");
+    config.sp_config = NULL;
     config.can_host = true;
 
     if (!g_key_file_load_from_file(key_file, config_file_path, 0, &error)) {
@@ -611,10 +627,22 @@ static bool parse_config(int* argc, char*** argv) {
         config.mp_map = value;
     }
 
+    if ((value = g_key_file_get_string(key_file, "multiplayer", "config",
+                                       NULL)) != NULL) {
+        g_free(config.mp_config);
+        config.mp_config = value;
+    }
+
     if ((value = g_key_file_get_string(key_file, "singleplayer", "wad",
                                        NULL)) != NULL) {
         g_free(config.sp_wad);
         config.sp_wad = value;
+    }
+
+    if ((value = g_key_file_get_string(key_file, "singleplayer", "config",
+                                       NULL)) != NULL) {
+        g_free(config.sp_config);
+        config.sp_config = value;
     }
 
     config.can_host =

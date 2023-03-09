@@ -23,9 +23,12 @@
 #define WAD_KEY "wad"
 #define CAN_HOST_KEY "can-host"
 
-#define SOURCE_WAIT (60 * 1000)
-
 #define DEFAULT_CONFIG_PATH "/etc/oe-zdoom/config.ini"
+#define DEFAULT_ZDOOM "zdoom"
+#define DEFAULT_MP_WAD "freedm.wad"
+#define DEFAULT_MP_MAP "MAP01"
+#define DEFAULT_SP_WAD "freedoom1.wad"
+#define DEFAULT_SOURCE_WAIT (30)
 
 static struct config {
     uint16_t port;
@@ -36,6 +39,7 @@ static struct config {
     char* sp_wad;
     char* sp_config;
     bool can_host;
+    int source_wait;
 } config;
 
 struct local_service {
@@ -52,8 +56,9 @@ struct local_service {
     AvahiStringList* txt_records;
 };
 
-static int timeout_source = -1;
-static GPid child_pid = -1;
+static int timeout_source = 0;
+static int child_source = 0;
+static GPid child_pid = 0;
 static AvahiClient* avahi_client;
 
 static struct local_service local_client_service = {};
@@ -73,8 +78,9 @@ struct remote_service {
     bool can_host;
 };
 
-static TAILQ_HEAD(remote_service_head, remote_service) client_service_list;
-static struct remote_service* current_host;
+static TAILQ_HEAD(remote_service_head, remote_service)
+    client_service_list = TAILQ_HEAD_INITIALIZER(client_service_list);
+static struct remote_service* current_host = NULL;
 static bool single_player_running = false;
 
 static void create_service(AvahiClient* client, struct local_service* service);
@@ -83,17 +89,24 @@ static gboolean on_source_timeout(gpointer userdata);
 
 static void stop_service(struct local_service* service) {
     if (service->group) {
+        g_printf("Stopping service %s\n", service->name);
         avahi_entry_group_reset(service->group);
         avahi_entry_group_free(service->group);
         service->group = NULL;
     }
 }
 
-static void reset_source_timer(void) {
-    if (timeout_source >= 0) {
+static void stop_source_timer(void) {
+    if (timeout_source) {
         g_source_remove(timeout_source);
+        timeout_source = 0;
     }
-    timeout_source = g_timeout_add(SOURCE_WAIT, on_source_timeout, NULL);
+}
+
+static void restart_source_timer(void) {
+    stop_source_timer();
+    timeout_source =
+        g_timeout_add(config.source_wait * 1000, on_source_timeout, NULL);
 }
 
 static void remote_service_free(struct remote_service* service) {
@@ -118,11 +131,25 @@ static bool remote_service_equal(struct remote_service const* a,
 static void on_child_exit(GPid pid, gint status, gpointer userdata);
 
 static void spawn_child(char** argv) {
-    if (child_pid > 0) {
+    if (child_pid) {
         kill(child_pid, SIGINT);
+        waitpid(child_pid, NULL, 0);
         child_pid = 0;
     }
+    if (child_source) {
+        g_source_remove(child_source);
+        child_source = 0;
+    }
+
     GError* error = NULL;
+
+    g_print("Launching");
+
+    for (int i = 0; argv[i] != NULL; i++) {
+        g_print(" %s", argv[i]);
+    }
+
+    g_print("\n");
 
     if (!g_spawn_async(NULL, argv, NULL,
                        G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD, NULL,
@@ -132,10 +159,13 @@ static void spawn_child(char** argv) {
         return;
     }
 
-    g_child_watch_add(child_pid, on_child_exit, NULL);
+    g_print("Child PID is %d\n", child_pid);
+
+    child_source = g_child_watch_add(child_pid, on_child_exit, NULL);
 }
 
 static void launch_single_player(void) {
+    stop_service(&local_host_service);
     if (!single_player_running) {
         g_print("Launching single player game\n");
         g_autoptr(GStrvBuilder) sb = g_strv_builder_new();
@@ -156,6 +186,7 @@ static void launch_single_player(void) {
 
 static void connect_to_host(void) {
     char port_str[12];
+    stop_service(&local_host_service);
     g_print("Connecting to host %s:%d\n", current_host->hostname,
             current_host->port);
 
@@ -179,20 +210,46 @@ static void connect_to_host(void) {
     single_player_running = false;
 }
 
-static void on_child_exit(GPid pid, gint status, gpointer userdata) {
-    g_print("Child exited\n");
-    g_spawn_close_pid(pid);
-    if (pid == child_pid) {
-        child_pid = 0;
+static void host_game(int num_players) {
+    g_print("Hosting game for %d players\n", num_players);
+    char count_str[12];
+    g_autoptr(GStrvBuilder) sb = g_strv_builder_new();
+
+    g_strv_builder_add(sb, config.zdoom);
+    g_strv_builder_add(sb, "-iwad");
+    g_strv_builder_add(sb, config.mp_wad);
+    g_strv_builder_add(sb, "-deathmatch");
+    g_strv_builder_add(sb, "+map");
+    g_strv_builder_add(sb, config.mp_map);
+    g_strv_builder_add(sb, "-host");
+    snprintf(count_str, sizeof(count_str), "%i", num_players);
+    g_strv_builder_add(sb, count_str);
+    g_strv_builder_add(sb, "-port");
+    snprintf(count_str, sizeof(count_str), "%i", config.port);
+    g_strv_builder_add(sb, count_str);
+    if (config.mp_config) {
+        g_strv_builder_add(sb, "-config");
+        g_strv_builder_add(sb, config.mp_config);
     }
+
+    g_auto(GStrv) argv = g_strv_builder_end(sb);
+    spawn_child(argv);
+
     single_player_running = false;
 
-    stop_service(&local_host_service);
-    if (current_host) {
-        connect_to_host();
-    } else {
-        launch_single_player();
+    create_service(avahi_client, &local_host_service);
+}
+
+static void on_child_exit(GPid pid, gint status, gpointer userdata) {
+    g_print("Child %d exited with %d\n", pid, status);
+    g_spawn_close_pid(pid);
+    if (pid != child_pid) {
+        return;
     }
+    child_source = 0;
+
+    single_player_running = false;
+    launch_single_player();
 }
 
 static gboolean on_source_timeout(gpointer userdata) {
@@ -213,50 +270,23 @@ static gboolean on_source_timeout(gpointer userdata) {
     if (best != NULL && best->can_host) {
         if (best->flags & AVAHI_LOOKUP_RESULT_OUR_OWN) {
             if (other_count) {
-                become_host = true;
                 g_print("This is the best host. Hosting for %i clients....\n",
                         other_count);
+                host_game(other_count + 1);
             } else {
                 g_print("No peers found\n");
+                launch_single_player();
             }
         } else {
             g_print("Best host is %s\n", best->hostname);
+            // No change here; wait for the host to start the game
         }
     } else {
         g_print("No suitable hosts\n");
-    }
-
-    if (become_host) {
-        char count_str[12];
-        g_autoptr(GStrvBuilder) sb = g_strv_builder_new();
-
-        g_strv_builder_add(sb, config.zdoom);
-        g_strv_builder_add(sb, "-iwad");
-        g_strv_builder_add(sb, config.mp_wad);
-        g_strv_builder_add(sb, "-deathmatch");
-        g_strv_builder_add(sb, "+map");
-        g_strv_builder_add(sb, config.mp_map);
-        g_strv_builder_add(sb, "-host");
-        snprintf(count_str, sizeof(count_str), "%i", other_count + 1);
-        g_strv_builder_add(sb, count_str);
-        g_strv_builder_add(sb, "-port");
-        snprintf(count_str, sizeof(count_str), "%i", config.port);
-        g_strv_builder_add(sb, count_str);
-        if (config.mp_config) {
-            g_strv_builder_add(sb, "-config");
-            g_strv_builder_add(sb, config.mp_config);
-        }
-
-        g_auto(GStrv) argv = g_strv_builder_end(sb);
-        spawn_child(argv);
-        single_player_running = false;
-
-        create_service(avahi_client, &local_host_service);
-    } else {
         launch_single_player();
     }
 
-    timeout_source = -1;
+    timeout_source = 0;
     return FALSE;
 }
 
@@ -432,6 +462,7 @@ static void resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interface,
                 struct remote_service *c, *tmp_c = NULL;
                 TAILQ_FOREACH_SAFE(c, &client_service_list, link, tmp_c) {
                     if (remote_service_equal(service, c)) {
+                        g_print("Removing client %s\n", c->name);
                         TAILQ_REMOVE(&client_service_list, c, link);
                         remote_service_free(c);
                     }
@@ -443,20 +474,21 @@ static void resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interface,
                         service->can_host ? "true" : "false");
 
                 // Sorted insert
-                c = NULL;
                 TAILQ_FOREACH(c, &client_service_list, link) {
                     if (cmp_remote_service(service, c) < 0) {
-                        TAILQ_INSERT_BEFORE(service, c, link);
+                        g_print("Adding new client before %s\n", c->name);
+                        TAILQ_INSERT_BEFORE(c, service, link);
                         break;
                     }
                 }
                 if (c == NULL) {
+                    g_print("Adding new client to end of list\n");
                     TAILQ_INSERT_TAIL(&client_service_list, service, link);
                 }
 
                 // If this is not our own service, restart the source timer
                 if ((service->flags & AVAHI_LOOKUP_RESULT_OUR_OWN) == 0) {
-                    reset_source_timer();
+                    restart_source_timer();
                 }
             } else if (g_strcmp0(type, HOST_SERVICE_NAME) == 0) {
                 if ((service->flags & AVAHI_LOOKUP_RESULT_OUR_OWN) == 0) {
@@ -467,11 +499,7 @@ static void resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interface,
 
                     connect_to_host();
 
-                    // Stop timer
-                    if (timeout_source >= 0) {
-                        g_source_remove(timeout_source);
-                        timeout_source = -1;
-                    }
+                    stop_source_timer();
                 } else {
                     remote_service_free(service);
                 }
@@ -528,8 +556,9 @@ static void browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface,
                     g_strcmp0(client->type, type) == 0 &&
                     g_strcmp0(client->domain, domain) == 0) {
                     if ((client->flags & AVAHI_LOOKUP_RESULT_OUR_OWN) == 0) {
-                        reset_source_timer();
+                        restart_source_timer();
                     }
+                    g_print("Removing client %s\n", client->name);
                     TAILQ_REMOVE(&client_service_list, client, link);
 
                     remote_service_free(client);
@@ -543,7 +572,7 @@ static void browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface,
                 current_host = NULL;
 
                 launch_single_player();
-                reset_source_timer();
+                restart_source_timer();
             }
         } break;
 
@@ -601,13 +630,14 @@ static bool parse_config(int* argc, char*** argv) {
     g_autoptr(GKeyFile) key_file = g_key_file_new();
 
     config.port = 5029;
-    config.zdoom = g_strdup("gzdoom");
-    config.mp_wad = g_strdup("freedm.wad");
-    config.mp_map = g_strdup("MAP01");
+    config.zdoom = g_strdup(DEFAULT_ZDOOM);
+    config.mp_wad = g_strdup(DEFAULT_MP_WAD);
+    config.mp_map = g_strdup(DEFAULT_MP_MAP);
     config.mp_config = NULL;
-    config.sp_wad = g_strdup("freedoom1.wad");
+    config.sp_wad = g_strdup(DEFAULT_SP_WAD);
     config.sp_config = NULL;
     config.can_host = true;
+    config.source_wait = DEFAULT_SOURCE_WAIT;
 
     if (!g_key_file_load_from_file(key_file, config_file_path, 0, &error)) {
         g_warning("Cannot open %s: %m", config_file_path);
@@ -654,6 +684,17 @@ static bool parse_config(int* argc, char*** argv) {
         g_clear_error(&error);
     }
 
+    int ival;
+    ival = g_key_file_get_integer(key_file, "multiplayer", "port", NULL);
+    if (ival > 0) {
+        config.port = ival;
+    }
+
+    ival = g_key_file_get_integer(key_file, "multiplayer", "wait", NULL);
+    if (ival > 0) {
+        config.source_wait = ival;
+    }
+
     return true;
 }
 
@@ -663,7 +704,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    TAILQ_INIT(&client_service_list);
     g_autoptr(GMainLoop) loop = g_main_loop_new(NULL, FALSE);
 
     local_client_service.interface = AVAHI_IF_UNSPEC;

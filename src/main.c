@@ -266,7 +266,6 @@ static gboolean on_source_timeout(gpointer userdata) {
     }
 
     struct remote_service* best = TAILQ_FIRST(&client_service_list);
-    bool become_host = false;
 
     if (best != NULL && best->can_host) {
         if (best->flags & AVAHI_LOOKUP_RESULT_OUR_OWN) {

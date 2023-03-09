@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <sys/queue.h>
+#include <sys/wait.h>
 #include <systemd/sd-id128.h>
 
 #define CLIENT_SERVICE_NAME "_oe-doom-client._udp"

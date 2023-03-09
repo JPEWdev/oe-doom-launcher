@@ -90,7 +90,7 @@ static gboolean on_source_timeout(gpointer userdata);
 
 static void stop_service(struct local_service* service) {
     if (service->group) {
-        g_printf("Stopping service %s\n", service->name);
+        g_print("Stopping service %s %s\n", service->name, service->type);
         avahi_entry_group_reset(service->group);
         avahi_entry_group_free(service->group);
         service->group = NULL;
@@ -407,11 +407,11 @@ static void resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interface,
 
         case AVAHI_RESOLVER_FOUND: {
             char a[AVAHI_ADDRESS_STR_MAX], *t;
-            g_print("Service '%s' of type '%s' in domain '%s':\n", name, type,
+            g_debug("Service '%s' of type '%s' in domain '%s':\n", name, type,
                     domain);
             avahi_address_snprint(a, sizeof(a), address);
             t = avahi_string_list_to_string(txt);
-            g_print(
+            g_debug(
                 "\t%s:%u (%s)\n"
                 "\tTXT=%s\n"
                 "\tcookie is %u\n"
@@ -473,6 +473,10 @@ static void resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interface,
                         service->hostname);
                 g_print("  can-host: %s\n",
                         service->can_host ? "true" : "false");
+                g_print("  is-own: %s\n",
+                        (service->flags & AVAHI_LOOKUP_RESULT_OUR_OWN)
+                            ? "true"
+                            : "false");
 
                 // Sorted insert
                 TAILQ_FOREACH(c, &client_service_list, link) {
@@ -524,14 +528,13 @@ static void browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface,
      * removed from the LAN */
     switch (event) {
         case AVAHI_BROWSER_FAILURE:
-            fprintf(stderr, "(Browser) %s\n",
-                    avahi_strerror(avahi_client_errno(
-                        avahi_service_browser_get_client(b))));
+            g_warning("(Browser) %s\n",
+                      avahi_strerror(avahi_client_errno(
+                          avahi_service_browser_get_client(b))));
             return;
 
         case AVAHI_BROWSER_NEW:
-            fprintf(stderr,
-                    "(Browser) NEW: service '%s' of type '%s' in domain '%s'\n",
+            g_debug("(Browser) NEW: service '%s' of type '%s' in domain '%s'\n",
                     name, type, domain);
             /* We ignore the returned resolver object. In the callback
                function we free it. If the server is terminated before
@@ -540,15 +543,14 @@ static void browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface,
             if (!(avahi_service_resolver_new(c, interface, protocol, name, type,
                                              domain, AVAHI_PROTO_INET, 0,
                                              resolve_callback, c)))
-                fprintf(stderr, "Failed to resolve service '%s': %s\n", name,
-                        avahi_strerror(avahi_client_errno(c)));
+                g_warning("Failed to resolve service '%s': %s\n", name,
+                          avahi_strerror(avahi_client_errno(c)));
             break;
 
         case AVAHI_BROWSER_REMOVE: {
-            fprintf(stderr,
-                    "(Browser) REMOVE: service '%s' of type '%s' in domain "
-                    "'%s'\n",
-                    name, type, domain);
+            g_debug(
+                "(Browser) REMOVE: service '%s' of type '%s' in domain '%s'\n",
+                name, type, domain);
             struct remote_service* client;
             struct remote_service* client_tmp;
 
@@ -579,9 +581,9 @@ static void browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface,
 
         case AVAHI_BROWSER_ALL_FOR_NOW:
         case AVAHI_BROWSER_CACHE_EXHAUSTED:
-            fprintf(stderr, "(Browser) %s\n",
-                    event == AVAHI_BROWSER_CACHE_EXHAUSTED ? "CACHE_EXHAUSTED"
-                                                           : "ALL_FOR_NOW");
+            g_debug("(Browser) %s\n", event == AVAHI_BROWSER_CACHE_EXHAUSTED
+                                          ? "CACHE_EXHAUSTED"
+                                          : "ALL_FOR_NOW");
             break;
     }
 }
@@ -590,7 +592,7 @@ static void browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface,
 static void avahi_client_callback(AVAHI_GCC_UNUSED AvahiClient* client,
                                   AvahiClientState state, void* userdata) {
     GMainLoop* loop = userdata;
-    g_message("Avahi Client State Change: %d", state);
+    g_debug("Avahi Client State Change: %d", state);
     switch (state) {
         case AVAHI_CLIENT_S_RUNNING:
             create_service(client, &local_client_service);
@@ -598,8 +600,8 @@ static void avahi_client_callback(AVAHI_GCC_UNUSED AvahiClient* client,
 
         case AVAHI_CLIENT_FAILURE:
             /* We we're disconnected from the Daemon */
-            g_message("Disconnected from the Avahi Daemon: %s",
-                      avahi_strerror(avahi_client_errno(client)));
+            g_debug("Disconnected from the Avahi Daemon: %s",
+                    avahi_strerror(avahi_client_errno(client)));
             /* Quit the application */
             g_main_loop_quit(loop);
             break;

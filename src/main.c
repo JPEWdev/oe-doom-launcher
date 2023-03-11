@@ -10,6 +10,7 @@
 #include <avahi-common/error.h>
 #include <avahi-glib/glib-malloc.h>
 #include <avahi-glib/glib-watch.h>
+#include <glib-unix.h>
 #include <glib.h>
 #include <libudev.h>
 #include <signal.h>
@@ -133,8 +134,9 @@ static bool remote_service_equal(struct remote_service const* a,
 
 static void on_child_exit(GPid pid, gint status, gpointer userdata);
 
-static void spawn_child(char** argv) {
+static void kill_child(void) {
     if (child_pid) {
+        g_print("Killing child %d\n", child_pid);
         kill(child_pid, SIGINT);
         waitpid(child_pid, NULL, 0);
         child_pid = 0;
@@ -143,6 +145,10 @@ static void spawn_child(char** argv) {
         g_source_remove(child_source);
         child_source = 0;
     }
+}
+
+static void spawn_child(char** argv) {
+    kill_child();
 
     GError* error = NULL;
 
@@ -742,6 +748,12 @@ static bool check_has_keyboard(void) {
     return has_keyboard;
 }
 
+static gboolean on_term_signal(gpointer data) {
+    GMainLoop* loop = data;
+    g_main_loop_quit(loop);
+    return false;
+}
+
 int main(int argc, char** argv) {
     int error = 0;
     if (!parse_config(&argc, &argv)) {
@@ -797,7 +809,17 @@ int main(int argc, char** argv) {
 
     launch_single_player();
 
+    g_unix_signal_add(SIGINT, on_term_signal, loop);
+    g_unix_signal_add(SIGTERM, on_term_signal, loop);
+
     g_main_loop_run(loop);
+
+    g_print("Exiting...\n");
+
+    stop_service(&local_client_service);
+    stop_service(&local_host_service);
+
+    kill_child();
 
     avahi_service_browser_free(host_browser);
     avahi_service_browser_free(client_browser);

@@ -5,6 +5,7 @@ avahi_glib_dep = dependency('avahi-glib')
 glib_dep = dependency('glib-2.0')
 libbsd_dep = dependency('libbsd-overlay')
 systemd_dep = dependency('libsystemd')
+udev_dep = dependency('libudev')
 
 executable('oe-doom-launcher', [
     'src/main.c',
@@ -15,6 +16,7 @@ executable('oe-doom-launcher', [
     glib_dep,
     libbsd_dep,
     systemd_dep,
+    udev_dep,
   ],
   install: true
 )

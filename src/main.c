@@ -11,6 +11,7 @@
 #include <avahi-glib/glib-malloc.h>
 #include <avahi-glib/glib-watch.h>
 #include <glib.h>
+#include <libudev.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -22,7 +23,7 @@
 #define HOST_SERVICE_NAME "_oe-doom-host._udp"
 
 #define WAD_KEY "wad"
-#define CAN_HOST_KEY "can-host"
+#define HOST_PREF_KEY "pref"
 
 #define DEFAULT_CONFIG_PATH "/etc/oe-zdoom/config.ini"
 #define DEFAULT_ZDOOM "zdoom"
@@ -76,7 +77,7 @@ struct remote_service {
     char* hostname;
     char* wad;
     AvahiLookupResultFlags flags;
-    bool can_host;
+    int host_preference;
 };
 
 static TAILQ_HEAD(remote_service_head, remote_service)
@@ -267,7 +268,7 @@ static gboolean on_source_timeout(gpointer userdata) {
 
     struct remote_service* best = TAILQ_FIRST(&client_service_list);
 
-    if (best != NULL && best->can_host) {
+    if (best != NULL && best->host_preference) {
         if (best->flags & AVAHI_LOOKUP_RESULT_OUR_OWN) {
             if (other_count) {
                 g_print("This is the best host. Hosting for %i clients....\n",
@@ -292,8 +293,9 @@ static gboolean on_source_timeout(gpointer userdata) {
 
 static int cmp_remote_service(struct remote_service* const a,
                               struct remote_service* const b) {
-    if (a->can_host != b->can_host) {
-        return !!b->can_host - !!a->can_host;
+    int ret = a->host_preference - b->host_preference;
+    if (ret) {
+        return ret;
     }
 
     return g_strcmp0(a->name, b->name);
@@ -446,8 +448,8 @@ static void resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interface,
                     continue;
                 }
 
-                if (g_strcmp0(key, CAN_HOST_KEY) == 0) {
-                    service->can_host = (g_strcmp0(value, "1") == 0);
+                if (g_strcmp0(key, HOST_PREF_KEY) == 0) {
+                    service->host_preference = strtol(value, NULL, 0);
                 } else if (g_strcmp0(key, WAD_KEY) == 0) {
                     service->wad = g_strdup(value);
                 }
@@ -470,8 +472,7 @@ static void resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interface,
 
                 g_print("New client %s (%s)\n", service->name,
                         service->hostname);
-                g_print("  can-host: %s\n",
-                        service->can_host ? "true" : "false");
+                g_print("  host-preference: %d\n", service->host_preference);
                 g_print("  is-own: %s\n",
                         (service->flags & AVAHI_LOOKUP_RESULT_OUR_OWN)
                             ? "true"
@@ -479,7 +480,7 @@ static void resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interface,
 
                 // Sorted insert
                 TAILQ_FOREACH(c, &client_service_list, link) {
-                    if (cmp_remote_service(service, c) < 0) {
+                    if (cmp_remote_service(service, c) > 0) {
                         g_print("Adding new client before %s\n", c->name);
                         TAILQ_INSERT_BEFORE(c, service, link);
                         break;
@@ -700,11 +701,53 @@ static bool parse_config(int* argc, char*** argv) {
     return true;
 }
 
+static bool check_has_keyboard(void) {
+    bool has_keyboard = false;
+    struct udev* udev = udev_new();
+    struct udev_enumerate* enumerate = udev_enumerate_new(udev);
+    udev_enumerate_add_match_subsystem(enumerate, "input");
+    udev_enumerate_scan_devices(enumerate);
+    struct udev_list_entry* entry;
+    udev_list_entry_foreach(entry, udev_enumerate_get_list_entry(enumerate)) {
+        struct udev_device* device =
+            udev_device_new_from_syspath(udev, udev_list_entry_get_name(entry));
+
+        char const* value =
+            udev_device_get_property_value(device, "ID_INPUT_KEYBOARD");
+
+        if (g_strcmp0(value, "1") == 0) {
+            has_keyboard = true;
+        }
+
+        udev_device_unref(device);
+
+        if (has_keyboard) {
+            break;
+        }
+    }
+
+    udev_enumerate_unref(enumerate);
+    udev_unref(udev);
+
+    return has_keyboard;
+}
+
 int main(int argc, char** argv) {
     int error = 0;
     if (!parse_config(&argc, &argv)) {
         return 1;
     }
+
+    bool has_keyboard = check_has_keyboard();
+    int host_preference = 0;
+    if (config.can_host) {
+        if (has_keyboard) {
+            host_preference = 2;
+        } else {
+            host_preference = 1;
+        }
+    }
+    g_print("Host preference is %d\n", host_preference);
 
     g_autoptr(GMainLoop) loop = g_main_loop_new(NULL, FALSE);
 
@@ -713,8 +756,8 @@ int main(int argc, char** argv) {
     local_client_service.type = CLIENT_SERVICE_NAME;
     local_client_service.port = config.port;
     local_client_service.txt_records =
-        avahi_string_list_add_pair(local_client_service.txt_records, "can-host",
-                                   config.can_host ? "1" : "0");
+        avahi_string_list_add_printf(local_client_service.txt_records, "%s=%d",
+                                     HOST_PREF_KEY, host_preference);
 
     local_host_service.interface = AVAHI_IF_UNSPEC;
     local_host_service.protocol = AVAHI_PROTO_INET;

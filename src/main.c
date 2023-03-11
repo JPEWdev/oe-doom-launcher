@@ -652,6 +652,12 @@ static bool parse_config(int* argc, char*** argv) {
     }
 
     char* value;
+    if ((value = g_key_file_get_string(key_file, "global", "zdoom", NULL)) !=
+        NULL) {
+        g_free(config.zdoom);
+        config.zdoom = value;
+    }
+
     if ((value = g_key_file_get_string(key_file, "multiplayer", "wad", NULL)) !=
         NULL) {
         g_free(config.mp_wad);

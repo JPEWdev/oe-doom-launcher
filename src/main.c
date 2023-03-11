@@ -42,6 +42,7 @@ static struct config {
     char* sp_config;
     bool can_host;
     int source_wait;
+    int host_preference_override;
 } config;
 
 struct local_service {
@@ -612,11 +613,24 @@ static void avahi_client_callback(AVAHI_GCC_UNUSED AvahiClient* client,
 }
 
 static bool parse_config(int* argc, char*** argv) {
+    config.port = 5029;
+    config.zdoom = g_strdup(DEFAULT_ZDOOM);
+    config.mp_wad = g_strdup(DEFAULT_MP_WAD);
+    config.mp_map = g_strdup(DEFAULT_MP_MAP);
+    config.mp_config = NULL;
+    config.sp_wad = g_strdup(DEFAULT_SP_WAD);
+    config.sp_config = NULL;
+    config.can_host = true;
+    config.source_wait = DEFAULT_SOURCE_WAIT;
+    config.host_preference_override = -1;
+
     static gchar* config_file_path = DEFAULT_CONFIG_PATH;
 
     static const GOptionEntry entries[] = {
         {"config", 'c', 0, G_OPTION_ARG_FILENAME, &config_file_path,
          "Config file path"},
+        {"host-preference", 'p', 0, G_OPTION_ARG_INT,
+         &config.host_preference_override, "Override host preference"},
         {},
     };
 
@@ -631,16 +645,6 @@ static bool parse_config(int* argc, char*** argv) {
     }
 
     g_autoptr(GKeyFile) key_file = g_key_file_new();
-
-    config.port = 5029;
-    config.zdoom = g_strdup(DEFAULT_ZDOOM);
-    config.mp_wad = g_strdup(DEFAULT_MP_WAD);
-    config.mp_map = g_strdup(DEFAULT_MP_MAP);
-    config.mp_config = NULL;
-    config.sp_wad = g_strdup(DEFAULT_SP_WAD);
-    config.sp_config = NULL;
-    config.can_host = true;
-    config.source_wait = DEFAULT_SOURCE_WAIT;
 
     if (!g_key_file_load_from_file(key_file, config_file_path, 0, &error)) {
         g_warning("Cannot open %s: %m", config_file_path);
@@ -740,7 +744,9 @@ int main(int argc, char** argv) {
 
     bool has_keyboard = check_has_keyboard();
     int host_preference = 0;
-    if (config.can_host) {
+    if (config.host_preference_override >= 0) {
+        host_preference = config.host_preference_override;
+    } else if (config.can_host) {
         if (has_keyboard) {
             host_preference = 2;
         } else {

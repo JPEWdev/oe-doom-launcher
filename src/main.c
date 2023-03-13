@@ -728,10 +728,12 @@ static bool check_has_keyboard(void) {
         struct udev_device* device =
             udev_device_new_from_syspath(udev, udev_list_entry_get_name(entry));
 
-        char const* value =
+        char const* id_input_keyboard =
             udev_device_get_property_value(device, "ID_INPUT_KEYBOARD");
+        char const* id_bus = udev_device_get_property_value(device, "ID_BUS");
 
-        if (g_strcmp0(value, "1") == 0) {
+        if (g_strcmp0(id_input_keyboard, "1") == 0 &&
+            g_strcmp0(id_bus, "usb") == 0) {
             has_keyboard = true;
         }
 
@@ -766,6 +768,7 @@ int main(int argc, char** argv) {
         host_preference = config.host_preference_override;
     } else if (config.can_host) {
         if (has_keyboard) {
+            g_print("USB Keyboard detected\n");
             host_preference = 2;
         } else {
             host_preference = 1;
